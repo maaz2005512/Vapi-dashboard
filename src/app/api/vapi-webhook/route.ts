@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
     // Map Vapi fields into Supabase "calls" table
     const { data, error } = await supabase.from("calls").insert([
       {
-        id: callData.callId,                // unique call ID
+         // removed `id`, let Postgres handle it
         agent_id: callData.agentId,         // which agent handled the call
         user_id: callData.metadata?.userId, // optional: if you attach userId metadata in Vapi
         duration: callData.duration,
