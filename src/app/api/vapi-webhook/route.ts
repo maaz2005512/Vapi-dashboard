@@ -11,34 +11,44 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    // Extract basic call info
-    const callId = body?.id || body?.message?.call?.id || null;
-    const transcript = body?.transcript || body?.message?.transcript || null;
-    const analysis = body?.analysis || body?.message?.analysis || null;
-    const status = body?.status || body?.message?.status || "unknown";
-    const startedAt = body?.startedAt || body?.message?.startedAt || null;
-    const endedAt = body?.endedAt || body?.message?.endedAt || null;
+    // Extract the call data we need
+    const {
+      id: callId,
+      transcript,
+      recordingUrl,
+      startedAt,
+      endedAt,
+      cost,
+      duration,
+      message, // <--- full message object
+    } = body;
 
-    // Grab the userId from assistant.metadata
-    const userId = body?.message?.assistant?.metadata?.userId;
+    // Pull userId from message.assistant.metadata
+    const userId = message?.assistant?.metadata?.userId;
 
     if (!userId) {
-      console.error("❌ Missing userId in assistant.metadata", body);
+      console.error("❌ Missing userId in message.assistant.metadata", body);
       return NextResponse.json(
-        { error: "Missing userId in VAPI assistant.metadata" },
+        { error: "Missing userId in message.assistant.metadata" },
         { status: 400 }
       );
     }
 
+    // Calculate duration in seconds if not provided
+    const callDuration = duration
+      ? Math.floor(duration / 1000)
+      : startedAt && endedAt
+      ? Math.floor(new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000
+      : null;
+
     // Insert into Supabase
     const { error } = await supabase.from("calls").insert({
-      call_id: callId,
+      call_uuid: callId,
       user_id: userId,
       transcript: transcript || null,
-      analysis: analysis || null,
-      status,
-      started_at: startedAt ? new Date(startedAt).toISOString() : null,
-      ended_at: endedAt ? new Date(endedAt).toISOString() : null,
+      recording_url: recordingUrl || null,
+      duration: callDuration || null,
+      cost: cost || null,
     });
 
     if (error) {
@@ -50,7 +60,6 @@ export async function POST(req: Request) {
     }
 
     console.log("✅ Call inserted for user:", userId, "callId:", callId);
-
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err: any) {
     console.error("❌ Webhook handler failed:", err);
