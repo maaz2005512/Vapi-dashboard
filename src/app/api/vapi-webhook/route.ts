@@ -4,31 +4,28 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // 👈 service key needed to insert
+  process.env.SUPABASE_SERVICE_ROLE_KEY! // service key needed to insert
 );
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    // Destructure what we need from VAPI webhook payload
-    const {
-      id: callId,
-      transcript,
-      metadata,
-      analysis,
-      status,
-      startedAt,
-      endedAt,
-    } = body;
+    // Extract basic call info
+    const callId = body?.id || body?.message?.call?.id || null;
+    const transcript = body?.transcript || body?.message?.transcript || null;
+    const analysis = body?.analysis || body?.message?.analysis || null;
+    const status = body?.status || body?.message?.status || "unknown";
+    const startedAt = body?.startedAt || body?.message?.startedAt || null;
+    const endedAt = body?.endedAt || body?.message?.endedAt || null;
 
-    // Grab the userId we set in VAPI agent.metadata
-    const userId = metadata?.userId;
+    // Grab the userId from assistant.metadata
+    const userId = body?.message?.assistant?.metadata?.userId;
 
     if (!userId) {
-      console.error("❌ Missing userId in metadata", body);
+      console.error("❌ Missing userId in assistant.metadata", body);
       return NextResponse.json(
-        { error: "Missing userId in VAPI metadata" },
+        { error: "Missing userId in VAPI assistant.metadata" },
         { status: 400 }
       );
     }
@@ -39,7 +36,7 @@ export async function POST(req: Request) {
       user_id: userId,
       transcript: transcript || null,
       analysis: analysis || null,
-      status: status || "unknown",
+      status,
       started_at: startedAt ? new Date(startedAt).toISOString() : null,
       ended_at: endedAt ? new Date(endedAt).toISOString() : null,
     });
