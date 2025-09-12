@@ -11,7 +11,14 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    // Extract the call data we need
+    // We only care about "end-of-call-report" messages
+    const messageType = body?.message?.type;
+    if (messageType !== "end-of-call-report") {
+      console.log("ℹ️ Skipping non-final event:", messageType);
+      return NextResponse.json({ skipped: true }, { status: 200 });
+    }
+
+    // Extract call data
     const {
       id: callId,
       transcript,
@@ -19,11 +26,11 @@ export async function POST(req: Request) {
       startedAt,
       endedAt,
       cost,
-      duration,
-      message, // <--- full message object
+      duration, // sometimes provided in ms
+      message,
     } = body;
 
-    // Pull userId from message.assistant.metadata
+    // Pull userId from nested metadata
     const userId = message?.assistant?.metadata?.userId;
 
     if (!userId) {
@@ -34,20 +41,23 @@ export async function POST(req: Request) {
       );
     }
 
-    // Calculate duration in seconds if not provided
-    const callDuration = duration
-      ? Math.floor(duration / 1000)
-      : startedAt && endedAt
-      ? Math.floor(new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000
-      : null;
+    // Calculate duration (seconds) if not directly provided
+    const callDuration =
+      duration != null
+        ? Math.floor(duration / 1000)
+        : startedAt && endedAt
+        ? Math.floor(
+            (new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000
+          )
+        : null;
 
-    // Insert into Supabase
+    // Insert final call data
     const { error } = await supabase.from("calls").insert({
       call_uuid: callId,
       user_id: userId,
       transcript: transcript || null,
       recording_url: recordingUrl || null,
-      duration: callDuration || null,
+      duration: callDuration,
       cost: cost || null,
     });
 
@@ -59,7 +69,7 @@ export async function POST(req: Request) {
       );
     }
 
-    console.log("✅ Call inserted for user:", userId, "callId:", callId);
+    console.log("✅ Final call inserted for user:", userId, "callId:", callId);
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err: any) {
     console.error("❌ Webhook handler failed:", err);
