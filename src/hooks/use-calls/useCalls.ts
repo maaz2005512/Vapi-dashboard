@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/hooks/use-auth'
-import type { Call, CallWithDetails, UseCallsReturn, CallsChartDataPoint, CallSummary } from './types'
+import type { CallWithDetails, UseCallsReturn, CallsChartDataPoint, CallSummary } from './types'
 
 export function useCalls(): UseCallsReturn {
   const supabase = useMemo(() => createClient(), [])
@@ -15,6 +15,7 @@ export function useCalls(): UseCallsReturn {
   const [chartData, setChartData] = useState<CallsChartDataPoint[]>([])
   const [error, setError] = useState<string | null>(null)
 
+  // Load all calls
   const loadAllCalls = useCallback(async () => {
     if (!user) {
       setAllCalls([])
@@ -24,15 +25,19 @@ export function useCalls(): UseCallsReturn {
 
     try {
       setError(null)
-      
-      // RLS policies will automatically filter based on user's access level
-      // Company owners/admins see all company calls
-      // Client users see only calls for agents assigned to their client
-      // Using same query pattern as agent_analytics which works perfectly
+
       const { data, error: queryError } = await supabase
         .from('calls')
         .select(`
-          *,
+          id,
+          call_uuid,
+          user_id,
+          agent_id,
+          duration,
+          cost,
+          transcript,
+          recording_url,
+          created_at,
           agents!inner (
             id,
             name,
@@ -58,17 +63,23 @@ export function useCalls(): UseCallsReturn {
       }
 
       const formattedData: CallWithDetails[] = (data || []).map(item => ({
-        ...item,
-        // Ensure proper typing for arrays and objects
-        tags: item.tags || [],
-        transcript: item.transcript || null,
-        // Add the joined data
-        agent_name: item.agents.name,
-        agent_platform_name: item.agents.platform_name,
-        company_id: item.agents.company_id,
-        client_id: item.agents.client_id,
-        client_name: item.agents.clients?.name,
-        company_name: item.agents.companies?.name
+        id: item.id,
+        call_uuid: item.call_uuid,
+        user_id: item.user_id,
+        agent_id: item.agent_id,
+        duration: item.duration ?? 0,
+        cost: item.cost ?? 0,
+        transcript: item.transcript ?? null,
+        recording_url: item.recording_url ?? null,
+        created_at: item.created_at,
+
+        // joined agent/company/client info
+        agent_name: item.agents?.name ?? 'Unknown Agent',
+        agent_platform_name: item.agents?.platform_name ?? null,
+        company_id: item.agents?.company_id ?? null,
+        client_id: item.agents?.client_id ?? null,
+        client_name: item.agents?.clients?.name ?? null,
+        company_name: item.agents?.companies?.name ?? null
       }))
 
       setAllCalls(formattedData)
@@ -78,16 +89,14 @@ export function useCalls(): UseCallsReturn {
     }
   }, [supabase, user])
 
+  // Chart data (calls per day by agent)
   const getChartData = useCallback(async (limit: number = 5, days: number = 30): Promise<CallsChartDataPoint[]> => {
-    if (!user) {
-      return []
-    }
+    if (!user) return []
 
     try {
       setIsLoadingChart(true)
       setError(null)
 
-      // Get calls from the last N days
       const cutoffDate = new Date()
       cutoffDate.setDate(cutoffDate.getDate() - days)
 
@@ -107,38 +116,29 @@ export function useCalls(): UseCallsReturn {
         return []
       }
 
-      // Group by agent and get top N agents by call count
       const agentCounts: Record<string, number> = {}
       data?.forEach(item => {
-        const agentName = item.agents.name
+        const agentName = item.agents?.name ?? 'Unknown Agent'
         agentCounts[agentName] = (agentCounts[agentName] || 0) + 1
       })
 
-      // Get top N agents
       const topAgents = Object.entries(agentCounts)
-        .sort(([,a], [,b]) => b - a)
+        .sort(([, a], [, b]) => b - a)
         .slice(0, limit)
         .map(([name]) => name)
 
-      // Group data by date and transform to chart format
       const dateGroups: Record<string, Record<string, number>> = {}
       data?.forEach(item => {
-        const agentName = item.agents.name
-        if (!topAgents.includes(agentName)) return // Only include top agents
+        const agentName = item.agents?.name ?? 'Unknown Agent'
+        if (!topAgents.includes(agentName)) return
 
-        const date = new Date(item.created_at).toISOString().split('T')[0] // Get YYYY-MM-DD format
-        if (!dateGroups[date]) {
-          dateGroups[date] = {}
-        }
+        const date = new Date(item.created_at).toISOString().split('T')[0]
+        if (!dateGroups[date]) dateGroups[date] = {}
         dateGroups[date][agentName] = (dateGroups[date][agentName] || 0) + 1
       })
 
-      // Convert to chart data format
       const chartData: CallsChartDataPoint[] = Object.entries(dateGroups)
-        .map(([date, agents]) => ({
-          date,
-          ...agents
-        }))
+        .map(([date, agents]) => ({ date, ...agents }))
         .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
       setChartData(chartData)
@@ -151,24 +151,28 @@ export function useCalls(): UseCallsReturn {
     }
   }, [supabase, user])
 
+  // Get calls by agent id
   const getCallsByAgentId = useCallback(async (agentId: string): Promise<CallWithDetails[]> => {
-    if (!user || !agentId) {
-      return []
-    }
+    if (!user || !agentId) return []
 
     try {
       setIsLoadingByAgent(true)
       setError(null)
 
-      // Check if we already have this data cached
-      if (callsById[agentId]) {
-        return callsById[agentId]
-      }
+      if (callsById[agentId]) return callsById[agentId]
 
       const { data, error: queryError } = await supabase
         .from('calls')
         .select(`
-          *,
+          id,
+          call_uuid,
+          user_id,
+          agent_id,
+          duration,
+          cost,
+          transcript,
+          recording_url,
+          created_at,
           agents!inner (
             id,
             name,
@@ -194,24 +198,25 @@ export function useCalls(): UseCallsReturn {
       }
 
       const formattedData: CallWithDetails[] = (data || []).map(item => ({
-        ...item,
-        tags: item.tags || [],
-        transcript: item.transcript || null,
-        // Add the joined data
-        agent_name: item.agents.name,
-        agent_platform_name: item.agents.platform_name,
-        company_id: item.agents.company_id,
-        client_id: item.agents.client_id,
-        client_name: item.agents.clients?.name,
-        company_name: item.agents.companies?.name
+        id: item.id,
+        call_uuid: item.call_uuid,
+        user_id: item.user_id,
+        agent_id: item.agent_id,
+        duration: item.duration ?? 0,
+        cost: item.cost ?? 0,
+        transcript: item.transcript ?? null,
+        recording_url: item.recording_url ?? null,
+        created_at: item.created_at,
+
+        agent_name: item.agents?.name ?? 'Unknown Agent',
+        agent_platform_name: item.agents?.platform_name ?? null,
+        company_id: item.agents?.company_id ?? null,
+        client_id: item.agents?.client_id ?? null,
+        client_name: item.agents?.clients?.name ?? null,
+        company_name: item.agents?.companies?.name ?? null
       }))
 
-      // Cache the result
-      setCallsById(prev => ({
-        ...prev,
-        [agentId]: formattedData
-      }))
-
+      setCallsById(prev => ({ ...prev, [agentId]: formattedData }))
       return formattedData
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error occurred')
@@ -221,24 +226,28 @@ export function useCalls(): UseCallsReturn {
     }
   }, [supabase, user, callsById])
 
+  // Get single call by ID
   const getCallById = useCallback(async (callId: string): Promise<CallWithDetails | null> => {
-    if (!user || !callId) {
-      return null
-    }
+    if (!user || !callId) return null
 
     try {
       setError(null)
 
-      // Check if we already have this data in allCalls
       const existingCall = allCalls.find(call => call.id === callId)
-      if (existingCall) {
-        return existingCall
-      }
+      if (existingCall) return existingCall
 
       const { data, error: queryError } = await supabase
         .from('calls')
         .select(`
-          *,
+          id,
+          call_uuid,
+          user_id,
+          agent_id,
+          duration,
+          cost,
+          transcript,
+          recording_url,
+          created_at,
           agents!inner (
             id,
             name,
@@ -264,16 +273,22 @@ export function useCalls(): UseCallsReturn {
       }
 
       return {
-        ...data,
-        tags: data.tags || [],
-        transcript: data.transcript || null,
-        // Add the joined data
-        agent_name: data.agents.name,
-        agent_platform_name: data.agents.platform_name,
-        company_id: data.agents.company_id,
-        client_id: data.agents.client_id,
-        client_name: data.agents.clients?.name,
-        company_name: data.agents.companies?.name
+        id: data.id,
+        call_uuid: data.call_uuid,
+        user_id: data.user_id,
+        agent_id: data.agent_id,
+        duration: data.duration ?? 0,
+        cost: data.cost ?? 0,
+        transcript: data.transcript ?? null,
+        recording_url: data.recording_url ?? null,
+        created_at: data.created_at,
+
+        agent_name: data.agents?.name ?? 'Unknown Agent',
+        agent_platform_name: data.agents?.platform_name ?? null,
+        company_id: data.agents?.company_id ?? null,
+        client_id: data.agents?.client_id ?? null,
+        client_name: data.agents?.clients?.name ?? null,
+        company_name: data.agents?.companies?.name ?? null
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error occurred')
@@ -284,7 +299,6 @@ export function useCalls(): UseCallsReturn {
   const refresh = useCallback(async () => {
     setIsLoading(true)
     try {
-      // Clear cache and reload
       setCallsById({})
       await loadAllCalls()
     } finally {
@@ -294,19 +308,9 @@ export function useCalls(): UseCallsReturn {
 
   // Computed values
   const totalCalls = useMemo(() => allCalls.length, [allCalls])
-
-  const totalCost = useMemo(() => {
-    return allCalls.reduce((sum, call) => sum + (call.cost_cents || 0), 0)
-  }, [allCalls])
-
-  const totalDuration = useMemo(() => {
-    return allCalls.reduce((sum, call) => sum + call.duration_seconds, 0)
-  }, [allCalls])
-
-  const agentCount = useMemo(() => {
-    const uniqueAgentIds = new Set(allCalls.map(call => call.agent_id))
-    return uniqueAgentIds.size
-  }, [allCalls])
+  const totalCost = useMemo(() => allCalls.reduce((sum, call) => sum + (Number(call.cost) || 0), 0), [allCalls])
+  const totalDuration = useMemo(() => allCalls.reduce((sum, call) => sum + (call.duration || 0), 0), [allCalls])
+  const agentCount = useMemo(() => new Set(allCalls.map(call => call.agent_id)).size, [allCalls])
 
   const summary = useMemo((): CallSummary => {
     if (allCalls.length === 0) {
@@ -322,31 +326,19 @@ export function useCalls(): UseCallsReturn {
       }
     }
 
-    const completedCalls = allCalls.filter(call => 
-      call.status === 'Completed' || call.status === 'Resolved'
-    ).length
-
-    const byType: Record<string, number> = {}
-    const byStatus: Record<string, number> = {}
-
-    allCalls.forEach(call => {
-      byType[call.type] = (byType[call.type] || 0) + 1
-      byStatus[call.status] = (byStatus[call.status] || 0) + 1
-    })
-
     return {
       total_calls: allCalls.length,
       total_duration_seconds: totalDuration,
       total_cost_cents: totalCost,
       avg_duration_seconds: Math.round(totalDuration / allCalls.length),
       avg_cost_cents: Math.round(totalCost / allCalls.length),
-      success_rate: Math.round((completedCalls / allCalls.length) * 100),
-      by_type: byType,
-      by_status: byStatus
+      success_rate: 0, // adjust if you track status later
+      by_type: {},
+      by_status: {}
     }
   }, [allCalls, totalDuration, totalCost])
 
-  // Load data on mount and when user changes
+  // Load data on mount
   useEffect(() => {
     const load = async () => {
       setIsLoading(true)
@@ -356,35 +348,25 @@ export function useCalls(): UseCallsReturn {
         setIsLoading(false)
       }
     }
-
     load()
   }, [loadAllCalls])
 
   return {
-    // Loading states
     isLoading,
     isLoadingByAgent,
     isLoadingChart,
-    
-    // Data
     allCalls,
     callsById,
     chartData,
     summary,
-    
-    // Methods
     refresh,
     getCallsByAgentId,
     getChartData,
     getCallById,
-    
-    // Computed values
     totalCalls,
     totalCost,
     totalDuration,
     agentCount,
-    
-    // Error handling
     error
   }
 }
